@@ -26,6 +26,7 @@ val packagesToRelocate =
         "net.jpountz",
         "one.util.streamex",
         "it.unimi.dsi.fastutil",
+        "javax.annotation",
         "kotlinx.collections.immutable",
         "com.fasterxml",
         "org.codehaus",
