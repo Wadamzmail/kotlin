@@ -64,6 +64,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.jetbrains.kotlin.test.InTextDirectivesUtils.*;
+import static org.jetbrains.kotlin.utils.JavaVersionUtilKt.currentJavaVersion;
 
 public class KotlinTestUtils {
     public static final String ACTUAL_DATA_DIFFERS_FROM_FILE_CONTENT = "Actual data differs from file content";
@@ -189,7 +190,7 @@ public class KotlinTestUtils {
         else if (jdkKind == TestJdkKind.FULL_JDK_21) {
             configuration.put(JVMConfigurationKeys.JDK_HOME, KtTestUtil.getJdk21Home());
         }
-        else if (JavaVersion.current().compareTo(JavaVersion.compose(9)) >= 0) {
+        else if (currentJavaVersion().compareTo(JavaVersion.compose(9)) >= 0) {
             configuration.put(JVMConfigurationKeys.JDK_HOME, new File(System.getProperty("java.home")));
         }
 

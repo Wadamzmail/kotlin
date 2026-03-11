@@ -6,7 +6,8 @@
 package org.jetbrains.kotlin.cli.jvm.modules
 
 import com.intellij.util.lang.JavaVersion
+import org.jetbrains.kotlin.utils.currentJavaVersion
 
 fun isAtLeastJava9(): Boolean {
-    return JavaVersion.current() >= JavaVersion.compose(9)
+    return currentJavaVersion() >= JavaVersion.compose(9)
 }

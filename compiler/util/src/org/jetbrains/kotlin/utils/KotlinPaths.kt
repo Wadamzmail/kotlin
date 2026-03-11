@@ -114,8 +114,8 @@ interface KotlinPaths {
         Empty(),
         StdLib(Jar.StdLib, gen = {
             when {
-                JavaVersion.current() >= JavaVersion.compose(8) -> listOf(Jar.StdLibJdk7, Jar.StdLibJdk8)
-                JavaVersion.current() >= JavaVersion.compose(7) -> listOf(Jar.StdLibJdk7)
+                currentJavaVersion() >= JavaVersion.compose(8) -> listOf(Jar.StdLibJdk7, Jar.StdLibJdk8)
+                currentJavaVersion() >= JavaVersion.compose(7) -> listOf(Jar.StdLibJdk7)
                 else -> emptyList()
             }
         }),
