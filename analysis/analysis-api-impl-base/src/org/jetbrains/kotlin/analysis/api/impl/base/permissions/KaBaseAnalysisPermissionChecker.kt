@@ -53,8 +53,8 @@ internal class KaBaseAnalysisPermissionChecker : KaAnalysisPermissionChecker {
     }
 
     private fun isProhibitedEdtAnalysis(application: Application): Boolean =
-        application.isDispatchThread &&
-                !permissionOptions.defaultIsAnalysisAllowedOnEdt &&
+        /*false &&
+                */!permissionOptions.defaultIsAnalysisAllowedOnEdt &&
                 !permissionRegistry.isAnalysisAllowedOnEdt
 
     private fun isProhibitedWriteActionAnalysis(application: Application): Boolean =
