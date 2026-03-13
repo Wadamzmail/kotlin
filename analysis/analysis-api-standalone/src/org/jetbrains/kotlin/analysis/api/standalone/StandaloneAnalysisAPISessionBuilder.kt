@@ -61,6 +61,7 @@ import kotlin.contracts.contract
 public class StandaloneAnalysisAPISessionBuilder(
     projectDisposable: Disposable,
     unitTestMode: Boolean,
+    compilerConfiguration: CompilerConfiguration = CompilerConfiguration(),
 ) {
     init {
         // We depend on swing (indirectly through PSI or something), so we want to declare headless mode,
@@ -75,6 +76,7 @@ public class StandaloneAnalysisAPISessionBuilder(
         StandaloneProjectFactory.createProjectEnvironment(
             projectDisposable,
             KotlinCoreApplicationEnvironmentMode.fromUnitTestModeFlag(unitTestMode),
+            compilerConfiguration,
         )
 
     private val serviceRegistrars = listOf(FirStandaloneServiceRegistrar, StandaloneSessionServiceRegistrar)
@@ -258,6 +260,7 @@ internal object StandaloneSessionServiceRegistrar : AnalysisApiSimpleServiceRegi
 public inline fun buildStandaloneAnalysisAPISession(
     projectDisposable: Disposable = Disposer.newDisposable("StandaloneAnalysisAPISession.project"),
     unitTestMode: Boolean = false,
+    compilerConfiguration: CompilerConfiguration = CompilerConfiguration(),
     init: StandaloneAnalysisAPISessionBuilder.() -> Unit,
 ): StandaloneAnalysisAPISession {
     contract {
@@ -266,6 +269,7 @@ public inline fun buildStandaloneAnalysisAPISession(
     return StandaloneAnalysisAPISessionBuilder(
         projectDisposable,
         unitTestMode,
+        compilerConfiguration,
     ).apply(init).build()
 }
 
