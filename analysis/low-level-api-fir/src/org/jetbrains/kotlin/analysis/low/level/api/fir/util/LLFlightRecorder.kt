@@ -5,7 +5,6 @@
 
 package org.jetbrains.kotlin.analysis.low.level.api.fir.util
 
-import jdk.jfr.*
 import org.jetbrains.kotlin.analysis.api.KaImplementationDetail
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaBuiltinsModule
 import org.jetbrains.kotlin.analysis.api.projectStructure.KaDanglingFileModule
@@ -48,11 +47,103 @@ import org.jetbrains.kotlin.fir.declarations.utils.classId
 import org.jetbrains.kotlin.fir.declarations.utils.nameOrSpecialName
 import org.jetbrains.kotlin.utils.exceptions.shouldIjPlatformExceptionBeRethrown
 
-private const val KOTLIN_CODE_ANALYSIS_EVENT_CATEGORY = "Kotlin Code Analysis"
+/**
+ * Interface for completing phase events.
+ */
+internal interface LLPhaseEventCompleter {
+    fun notifyCompleted()
+    fun notifyCompletedWithFailure(throwable: Throwable)
+}
+
+/**
+ * Interface for completing phase suspension events.
+ */
+internal interface LLPhaseSuspensionEventCompleter {
+    fun notifyCompleted()
+}
+
+/**
+ * Backend interface for flight recorder implementations.
+ * Implement this interface to provide custom event recording (e.g., JFR, OpenTelemetry, logging).
+ */
+@KaImplementationDetail
+internal interface LLFlightRecorderBackend {
+    /** Whether phase events are enabled. */
+    val isPhaseEventEnabled: Boolean
+
+    /** Whether partial body analysis events are enabled. */
+    val isPartialBodyAnalysisEventEnabled: Boolean
+
+    /** Whether ready phase events are enabled. */
+    val isReadyPhaseEventEnabled: Boolean
+
+    /** Whether phase suspension events are enabled. */
+    val isPhaseSuspensionEventEnabled: Boolean
+
+    /** Whether stop-the-world invalidation events are enabled. */
+    val isStopWorldInvalidationEventEnabled: Boolean
+
+    /**
+     * Record a phase event start.
+     * @return A completer to signal event completion, or null if recording is not needed.
+     */
+    fun beginPhaseEvent(
+        path: String,
+        hash: Int,
+        phase: Byte,
+        moduleKind: Byte
+    ): LLPhaseEventCompleter?
+
+    /**
+     * Record a partial body analysis event.
+     */
+    fun recordPartialBodyAnalysisEvent(hash: Int, count: Int, attempt: Int)
+
+    /**
+     * Record a ready phase event.
+     */
+    fun recordReadyPhaseEvent(path: String, hash: Int, phase: Byte, moduleKind: Byte)
+
+    /**
+     * Record a phase suspension event start.
+     * @return A completer to signal event completion, or null if recording is not needed.
+     */
+    fun beginPhaseSuspensionEvent(hash: Int, phase: Byte): LLPhaseSuspensionEventCompleter?
+
+    /**
+     * Record a stop-the-world invalidation event.
+     * @param state true if invalidation was scheduled, false if completed.
+     */
+    fun recordStopWorldInvalidationEvent(state: Boolean)
+}
+
+/**
+ * No-op implementation of [LLFlightRecorderBackend].
+ * All events are disabled and no recording occurs.
+ */
+@KaImplementationDetail
+internal object NoOpFlightRecorderBackend : LLFlightRecorderBackend {
+    override val isPhaseEventEnabled: Boolean = false
+    override val isPartialBodyAnalysisEventEnabled: Boolean = false
+    override val isReadyPhaseEventEnabled: Boolean = false
+    override val isPhaseSuspensionEventEnabled: Boolean = false
+    override val isStopWorldInvalidationEventEnabled: Boolean = false
+
+    override fun beginPhaseEvent(path: String, hash: Int, phase: Byte, moduleKind: Byte): LLPhaseEventCompleter? = null
+    override fun recordPartialBodyAnalysisEvent(hash: Int, count: Int, attempt: Int) {}
+    override fun recordReadyPhaseEvent(path: String, hash: Int, phase: Byte, moduleKind: Byte) {}
+    override fun beginPhaseSuspensionEvent(hash: Int, phase: Byte): LLPhaseSuspensionEventCompleter? = null
+    override fun recordStopWorldInvalidationEvent(state: Boolean) {}
+}
 
 @KaImplementationDetail
 object LLFlightRecorder {
-    private val phaseEventType = EventType.getEventType(LLPhaseEvent::class.java)
+    /**
+     * The backend used for recording events.
+     * Can be replaced with a custom implementation (e.g., JFR-based) at initialization time.
+     */
+    @Volatile
+    internal var backend: LLFlightRecorderBackend = NoOpFlightRecorderBackend
 
     /**
      * Notify that the [target] declaration was successfully analyzed up to the given [phase] (possibly partially).
@@ -66,21 +157,17 @@ object LLFlightRecorder {
         containingDeclarations: List<FirDeclaration>,
         requestedPhase: FirResolvePhase
     ): LLPhaseEventCompleter? {
-        if (!phaseEventType.isEnabled) {
+        if (!backend.isPhaseEventEnabled) {
             return null
         }
 
-        return LLPhaseEvent(
+        return backend.beginPhaseEvent(
             path = path(containingDeclarations, target),
             hash = System.identityHashCode(target),
             phase = PHASE_COMPACT_NAMES[requestedPhase.ordinal],
             moduleKind = computeModuleKind(target)
-        ).apply {
-            begin()
-        }
+        )
     }
-
-    private val partialBodyAnalysisEventType = EventType.getEventType(LLPartialBodyAnalysisEvent::class.java)
 
     /**
      * Notify that the [declaration]'s body is analyzed partially.
@@ -89,18 +176,16 @@ object LLFlightRecorder {
      * @param state The current partial analysis state of the [declaration].
      */
     internal fun partialBodyAnalyzed(declaration: FirElementWithResolveState, state: LLPartialBodyAnalysisState) {
-        if (!partialBodyAnalysisEventType.isEnabled) {
+        if (!backend.isPartialBodyAnalysisEventEnabled) {
             return
         }
 
-        LLPartialBodyAnalysisEvent(
+        backend.recordPartialBodyAnalysisEvent(
             hash = System.identityHashCode(declaration),
             count = state.analyzedPsiStatementCount,
             attempt = state.performedAnalysesCount
-        ).commit()
+        )
     }
-
-    private val readyPhaseEventType = EventType.getEventType(LLReadyPhaseEvent::class.java)
 
     /**
      * Notify that the [target] declaration was required to be analyzed up to the given [phase].
@@ -113,18 +198,18 @@ object LLFlightRecorder {
      * @param phase The phase the declaration is already analyzed to.
      */
     internal fun readyPhase(target: FirElementWithResolveState, requestedPhase: FirResolvePhase) {
-        if (!readyPhaseEventType.isEnabled) {
+        if (!backend.isReadyPhaseEventEnabled) {
             return
         }
 
         val designation = LLFirResolveDesignationCollector.getDesignationToResolve(target)?.designation ?: return
 
-        LLReadyPhaseEvent(
+        backend.recordReadyPhaseEvent(
             path = path(designation.path, target),
             hash = System.identityHashCode(target),
             phase = PHASE_COMPACT_NAMES[requestedPhase.ordinal],
             moduleKind = computeModuleKind(target)
-        ).commit()
+        )
     }
 
     /**
@@ -140,19 +225,17 @@ object LLFlightRecorder {
         containingDeclarations: List<FirDeclaration>,
         requestedPhase: FirResolvePhase
     ) {
-        if (!readyPhaseEventType.isEnabled) {
+        if (!backend.isReadyPhaseEventEnabled) {
             return
         }
 
-        LLReadyPhaseEvent(
+        backend.recordReadyPhaseEvent(
             path = path(containingDeclarations, target),
             hash = System.identityHashCode(target),
             phase = PHASE_COMPACT_NAMES[requestedPhase.ordinal],
             moduleKind = computeModuleKind(target)
-        ).commit()
+        )
     }
-
-    private val phaseSuspensionEventType = EventType.getEventType(LLPhaseSuspensionEvent::class.java)
 
     /**
      * Notify that the current thread acknowledged the [declaration] is either finished analyzing up to [phase],
@@ -162,19 +245,15 @@ object LLFlightRecorder {
      * @param phase The phase the [declaration] is being analyzed to.
      */
     internal fun phaseSuspension(declaration: FirElementWithResolveState, requestedPhase: FirResolvePhase): LLPhaseSuspensionEventCompleter? {
-        if (!phaseSuspensionEventType.isEnabled) {
+        if (!backend.isPhaseSuspensionEventEnabled) {
             return null
         }
 
-        return LLPhaseSuspensionEvent(
+        return backend.beginPhaseSuspensionEvent(
             hash = System.identityHashCode(declaration),
             phase = PHASE_COMPACT_NAMES[requestedPhase.ordinal]
-        ).apply {
-            begin()
-        }
+        )
     }
-
-    private val stopWorldInvalidationEventType = EventType.getEventType(LLStopWorldInvalidation::class.java)
 
     /**
      * Notify that a stop-the-world session invalidation has been scheduled.
@@ -191,11 +270,11 @@ object LLFlightRecorder {
     }
 
     private fun stopWorldSessionInvalidation(newState: Boolean) {
-        if (!stopWorldInvalidationEventType.isEnabled) {
+        if (!backend.isStopWorldInvalidationEventEnabled) {
             return
         }
 
-        LLStopWorldInvalidation(state = newState).commit()
+        backend.recordStopWorldInvalidationEvent(newState)
     }
 
     private fun name(declaration: FirElementWithResolveState): String {
@@ -292,120 +371,12 @@ private val PHASE_COMPACT_NAMES = run {
     }
 }
 
-internal interface LLPhaseEventCompleter {
-    fun notifyCompleted()
-    fun notifyCompletedWithFailure(throwable: Throwable)
+/**
+ * Utility to determine the execution result code from a throwable.
+ * 0 - Success, 1 - Cancellation, 2 - Exception
+ */
+internal fun computeExecutionResult(throwable: Throwable): Byte = when {
+    throwable is PartialBodyAnalysisSuspendedException -> 0
+    shouldIjPlatformExceptionBeRethrown(throwable) -> 1
+    else -> 2
 }
-
-@Suppress("unused")
-@Name("org.jetbrains.kotlin.LLPhase")
-@Category(KOTLIN_CODE_ANALYSIS_EVENT_CATEGORY)
-@Label("Kotlin Declaration Phase Execution")
-@Description("A Kotlin declaration is analyzed to the specified FIR resolution phase (either successfully or with an error)")
-@StackTrace(false)
-private class LLPhaseEvent(
-    @Label("Designation Path")
-    private val path: String,
-
-    @Label("Declaration Hash")
-    private val hash: Int,
-
-    @Label("Phase")
-    private val phase: Byte,
-
-    @Label("Module Kind")
-    private val moduleKind: Byte
-) : Event(), LLPhaseEventCompleter {
-    @Label("Execution Result")
-    @Description("0 - Success, 1 - Cancellation, 2 - Exception")
-    private var result: Byte = -1
-
-    override fun notifyCompleted() {
-        result = 0
-        end()
-        commit()
-    }
-
-    override fun notifyCompletedWithFailure(throwable: Throwable) {
-        result = when {
-            throwable is PartialBodyAnalysisSuspendedException -> 0
-            shouldIjPlatformExceptionBeRethrown(throwable) -> 1
-            else -> 2
-        }
-        end()
-        commit()
-    }
-}
-
-@Suppress("unused")
-@Name("org.jetbrains.kotlin.LLPartialBodyAnalysis")
-@Category(KOTLIN_CODE_ANALYSIS_EVENT_CATEGORY)
-@Label("Kotlin Declaration Partial Body Analysis")
-@Description("A Kotlin declaration's body is analyzed up to the specified PSI statement number (inclusive)")
-@StackTrace(false)
-private class LLPartialBodyAnalysisEvent(
-    @Label("Declaration Hash")
-    private val hash: Int,
-
-    @Label("Analyzed Statement Count")
-    private val count: Int,
-
-    @Label("Analysis Attempt Number")
-    private val attempt: Int
-) : Event()
-
-@Suppress("unused")
-@Enabled(false) // The event is disabled by default due to the huge number of events
-@Name("org.jetbrains.kotlin.LLReadyPhase")
-@Category(KOTLIN_CODE_ANALYSIS_EVENT_CATEGORY)
-@Label("Ready Kotlin Declaration Analysis")
-@Description("A Kotlin declaration is requested to be analyzed, yet the analysis have been already done")
-@StackTrace(false)
-private class LLReadyPhaseEvent(
-    @Label("Designation path")
-    private val path: String,
-
-    @Label("Declaration Hash")
-    private val hash: Int,
-
-    @Label("Module Kind")
-    private val moduleKind: Byte,
-
-    @Label("Phase")
-    private val phase: Byte
-) : Event()
-
-internal interface LLPhaseSuspensionEventCompleter {
-    fun notifyCompleted()
-}
-
-@Suppress("unused")
-@Name("org.jetbrains.kotlin.LLPhaseSuspension")
-@Category(KOTLIN_CODE_ANALYSIS_EVENT_CATEGORY)
-@Label("Suspended Kotlin Declaration Analysis")
-@Description("A Kotlin declaration analysis was suspended, as the other thread was already progressing with the same analysis")
-@StackTrace(false)
-private class LLPhaseSuspensionEvent(
-    @Label("Declaration Hash")
-    private val hash: Int,
-
-    @Label("Phase")
-    private val phase: Byte
-) : Event(), LLPhaseSuspensionEventCompleter {
-    override fun notifyCompleted() {
-        end()
-        commit()
-    }
-}
-
-@Suppress("unused")
-@Name("org.jetbrains.kotlin.LLStopWorldInvalidation")
-@Category(KOTLIN_CODE_ANALYSIS_EVENT_CATEGORY)
-@Label("Stop-the-world Session Invalidation")
-@Description("Stop-the-world session invalidation either has been requested, or it has just completed")
-@StackTrace(false)
-private class LLStopWorldInvalidation(
-    @Label("Invalidation State")
-    @Description("If true, the invalidation has been requested, otherwise it has completed")
-    private val state: Boolean
-) : Event()
