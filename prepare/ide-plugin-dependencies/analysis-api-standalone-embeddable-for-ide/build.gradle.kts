@@ -25,6 +25,8 @@ dependencies {
     embeddableJar(project(":analysis:analysis-api-standalone:analysis-api-standalone-base",))
     embeddableJar(project(":analysis:analysis-api-standalone:analysis-api-fir-standalone-base",))
     embeddableJar(project(":analysis:analysis-api-standalone",))
+    //trying to make it Compiler Embeddable
+    embeddableJar(project(":compiler:incremental-compilation-impl",))
 }
 
 val packagesToRelocate =
